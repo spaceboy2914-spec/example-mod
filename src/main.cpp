@@ -1,100 +1,273 @@
-/**
- * Include the Geode headers.
- */
-#include <Geode/Geode.hpp>
+#include <Geode/utils/web.hpp>
+#include <Geode/modify/LevelInfoLayer.hpp>
+#include <Geode/modify/LevelCell.hpp>
 
-/**
- * Brings cocos2d and all Geode namespaces to the current scope.
- */
 using namespace geode::prelude;
 
-/**
- * `$modify` lets you extend and modify GD's classes.
- * To hook a function in Geode, simply $modify the class
- * and write a new function definition with the signature of
- * the function you want to hook.
- *
- * Here we use the overloaded `$modify` macro to set our own class name,
- * so that we can use it for button callbacks.
- *
- * Notice the header being included, you *must* include the header for
- * the class you are modifying, or you will get a compile error.
- *
- * Another way you could do this is like this:
- *
- * struct MyMenuLayer : Modify<MyMenuLayer, MenuLayer> {};
- */
-#include <Geode/modify/MenuLayer.hpp>
-class $modify(MyMenuLayer, MenuLayer) {
-	/**
-	 * Typically classes in GD are initialized using the `init` function, (though not always!),
-	 * so here we use it to add our own button to the bottom menu.
-	 *
-	 * Note that for all hooks, your signature has to *match exactly*,
-	 * `void init()` would not place a hook!
-	*/
-	bool init() {
-		/**
-		 * We call the original init function so that the
-		 * original class is properly initialized.
-		 */
-		if (!MenuLayer::init()) {
-			return false;
-		}
+static std::unordered_map<int, std::string> links;
 
-		/**
-		 * You can use methods from the `geode::log` namespace to log messages to the console,
-		 * being useful for debugging and such. See this page for more info about logging:
-		 * https://docs.geode-sdk.org/tutorials/logging
-		*/
-		log::debug("Hello from my MenuLayer::init hook! This layer has {} children.", this->getChildrenCount());
+void parseLinks(const std::string& str) {
+    if (str.empty()) return;
+    
+    links.clear();
+    
+    std::istringstream iss(str);
+    std::string line;
 
-		/**
-		 * See this page for more info about buttons
-		 * https://docs.geode-sdk.org/tutorials/buttons
-		*/
-		auto myButton = CCMenuItemSpriteExtra::create(
-			CCSprite::createWithSpriteFrameName("GJ_likeBtn_001.png"),
-			this,
-			/**
-			 * Here we use the name we set earlier for our modify class.
-			*/
-			menu_selector(MyMenuLayer::onMyButton)
-		);
+    while (getline(iss, line)) {
+        size_t delimiter_pos = line.find('|');
+        if (delimiter_pos == std::string::npos) continue;
 
-		/**
-		 * Here we access the `bottom-menu` node by its ID, and add our button to it.
-		 * Node IDs are a Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/nodetree
-		*/
-		auto menu = this->getChildByID("bottom-menu");
-		menu->addChild(myButton);
+        int id = numFromString<int>(line.substr(0, delimiter_pos)).unwrapOr(0);
+        if (id == 0) continue;
 
-		/**
-		 * The `_spr` string literal operator just prefixes the string with
-		 * your mod id followed by a slash. This is good practice for setting your own node ids.
-		*/
-		myButton->setID("my-button"_spr);
+        std::string link = line.substr(delimiter_pos + 1);
+        if (link.empty()) continue;
 
-		/**
-		 * We update the layout of the menu to ensure that our button is properly placed.
-		 * This is yet another Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/layouts
-		*/
-		menu->updateLayout();
+        links[id] = link;
+    }
+}
 
-		/**
-		 * We return `true` to indicate that the class was properly initialized.
-		 */
-		return true;
-	}
+void loadLinks(bool startup = false) {
+    parseLinks(Mod::get()->getSavedValue<std::string>("saved-string"));
+    
+    auto req = web::WebRequest();
+    req.header("Content-Type", "application/json");
 
-	/**
-	 * This is the callback function for the button we created earlier.
-	 * The signature for button callbacks must always be the same,
-	 * return type `void` and taking a `CCObject*`.
-	*/
-	void onMyButton(CCObject*) {
-		FLAlertLayer::create("Geode", "Hello from my custom mod!", "OK")->show();
-	}
+    req.get("https://raw.githubusercontent.com/ZiLko/Level-Showcases-Links/main/links")
+    .listen([startup](web::WebResponse* e) {
+        if (!e || !e->ok()) {
+            if (startup && links.empty()) {
+                Notification::create(
+                    "Level Showcases: Failed to load showcases.",
+                    NotificationIcon::Error
+                )->show();
+            }
+            return log::error("Failed to load showcases (Startup: {})", startup);
+        }
+
+        auto res = e->string();
+        std::string linksString = res.unwrapOr("");
+
+        bool err = linksString.size() < 100;
+
+        if (err && links.empty()) {
+            if (startup)
+                Notification::create(
+                    "Level Showcases: Failed to load showcases.",
+                    NotificationIcon::Error
+                )->show();
+            return;
+        }
+
+        if (!err) {
+            Mod::get()->setSavedValue("saved-string", linksString);
+        }
+        
+        parseLinks(linksString);
+    });
+}
+
+$on_mod(Loaded) {
+
+    if (!Mod::get()->getSettingValue<bool>("disable"))
+        loadLinks(true);
+
+    listenForSettingChanges("disable", [](bool value) {
+        if (!value)
+            loadLinks(false);
+    });
+}
+
+class $modify(MyLevelInfoLayer, LevelInfoLayer) {
+
+    void onShowcase(CCObject*) {
+        geode::utils::web::openLinkInBrowser(
+            "https://www.youtube.com/watch?v=" +
+            links.at(m_level->m_levelID.value())
+        );
+    }
+
+    bool init(GJGameLevel* level, bool challenge) {
+        if (!LevelInfoLayer::init(level, challenge)) return false;
+
+        if (m_levelType == GJLevelType::Editor || m_levelType == GJLevelType::Local) return true;
+        if (Mod::get()->getSettingValue<bool>("disable")) return true;
+        if (!links.contains(level->m_levelID.value())) return true;
+
+        Loader::get()->queueInMainThread([this] {
+            auto lbl = this->getChildByID("title-label");
+            auto menu = this->getChildByID("other-menu");
+            auto garageMenu = this->getChildByID("garage-menu");
+
+            if (!lbl || !menu || !garageMenu) return;
+
+            auto garageButton = garageMenu->getChildByID("garage-button");
+            if (!garageButton) return;
+
+            auto spr = CCSprite::createWithSpriteFrameName("gj_ytIcon_001.png");
+            spr->setScale(0.65f);
+
+            auto btn = CCMenuItemSpriteExtra::create(
+                spr, this,
+                menu_selector(MyLevelInfoLayer::onShowcase)
+            );
+            btn->setID("showcase-button"_spr);
+
+            menu->addChild(btn);
+
+            float labelEdge = lbl->getPosition().x +
+                lbl->getContentSize().width * lbl->getScale() / 2.f;
+
+            float buttonOffset = btn->getContentSize().width / 2.f + 3.f;
+
+            float garagePos = garageMenu->getPosition().x -
+                (garageMenu->getContentSize().width *
+                (garageMenu->getLayout() ? 0.5f : 0.f));
+
+            float buttonLeftEdge = garagePos +
+                garageButton->getPosition().x -
+                (garageButton->getContentSize().width / 2.f);
+
+            float extra = labelEdge + 6.f +
+                btn->getContentSize().width - buttonLeftEdge;
+
+            if (extra > 0) {
+                float targetWidth =
+                    (buttonLeftEdge - lbl->getPosition().x - 6.f -
+                    btn->getContentSize().width) * 2;
+
+                lbl->setScale(targetWidth / lbl->getContentSize().width);
+            } else {
+                extra = 0;
+            }
+
+            labelEdge = lbl->getPosition().x +
+                lbl->getContentSize().width * lbl->getScale() / 2.f;
+
+            if (auto dailyLbl = this->getChildByID("daily-label")) {
+                dailyLbl->setPositionX(
+                    dailyLbl->getPositionX() +
+                    btn->getContentSize().width + 4.f - extra
+                );
+                dailyLbl->setZOrder(dailyLbl->getZOrder() + 1);
+            }
+
+            btn->setPositionX(labelEdge + buttonOffset);
+            btn->setPositionY(lbl->getPosition().y);
+            btn->setPosition(btn->getPosition() - menu->getPosition());
+        });
+
+        return true;
+    }
+};
+
+class $modify(MyLevelCell, LevelCell) {
+
+    struct Fields {
+        CCSprite* m_showcaseIcon = nullptr;
+
+        CCNode* m_mainLayer = nullptr;
+        CCNode* m_copyIcon = nullptr;
+        CCNode* m_objectIcon = nullptr;
+        CCNode* m_mainMenu = nullptr;
+        CCNode* m_creatorName = nullptr;
+
+        bool m_didSchedule = false;
+    };
+
+    void setIconPosition(float) {
+        auto f = m_fields.self();
+
+        float scale = 1.f;
+        cocos2d::CCPoint pos = {0, 0};
+
+        CCNode* maxRight = f->m_objectIcon ? f->m_objectIcon : f->m_copyIcon;
+
+        if (f->m_copyIcon || f->m_objectIcon) {
+            if (f->m_copyIcon &&
+                f->m_copyIcon->getPositionX() > maxRight->getPositionX())
+                maxRight = f->m_copyIcon;
+
+            scale = maxRight->getContentSize().width *
+                maxRight->getScale() /
+                f->m_showcaseIcon->getContentSize().width;
+
+            pos = maxRight->getPosition() + ccp(15, 0);
+        } else {
+            scale = getContentSize().height < 80 ? 0.8f : 1.f;
+
+            if (f->m_mainMenu && f->m_creatorName) {
+                pos = f->m_mainMenu->getPosition() +
+                      f->m_creatorName->getPosition();
+
+                pos += ccp(
+                    f->m_creatorName->getContentSize().width / 2.f + 5,
+                    -1
+                );
+            }
+        }
+
+        if (f->m_mainMenu && f->m_creatorName) {
+            auto label = static_cast<CCLabelBMFont*>(
+                f->m_creatorName->getChildByType<CCLabelBMFont>(0)
+            );
+
+            std::string name = label ? label->getString() : "";
+
+            if (name == "By -" &&
+                Loader::get()->isModLoaded("cvolton.betterinfo")) {
+
+                if (!f->m_didSchedule)
+                    schedule(schedule_selector(MyLevelCell::setIconPosition), 0.1f);
+
+                f->m_didSchedule = true;
+            } else {
+                unschedule(schedule_selector(MyLevelCell::setIconPosition));
+            }
+        }
+
+        if (pos == ccp(0, 0)) {
+            f->m_showcaseIcon->setVisible(false);
+            return;
+        }
+
+        f->m_showcaseIcon->setPosition(pos);
+        f->m_showcaseIcon->setScale(scale);
+        f->m_showcaseIcon->setVisible(true);
+    }
+
+    void loadFromLevel(GJGameLevel* level) {
+        LevelCell::loadFromLevel(level);
+
+        if (level->m_levelType == GJLevelType::Editor ||
+            level->m_levelType == GJLevelType::Local) return;
+
+        if (Mod::get()->getSettingValue<bool>("disable") ||
+            Mod::get()->getSettingValue<bool>("disable-icon")) return;
+
+        if (!links.contains(level->m_levelID.value())) return;
+
+        Loader::get()->queueInMainThread([this] {
+            auto f = m_fields.self();
+
+            f->m_mainLayer = getChildByID("main-layer");
+            if (!f->m_mainLayer) return;
+
+            f->m_copyIcon = f->m_mainLayer->getChildByID("copy-indicator");
+            f->m_objectIcon = f->m_mainLayer->getChildByID("high-object-indicator");
+            f->m_mainMenu = f->m_mainLayer->getChildByID("main-menu");
+
+            if (f->m_mainMenu)
+                f->m_creatorName = f->m_mainMenu->getChildByID("creator-name");
+
+            f->m_showcaseIcon = CCSprite::create("showcase-icon.png"_spr);
+            f->m_showcaseIcon->setAnchorPoint({0, 0.5f});
+            f->m_showcaseIcon->setID("showcase-indicator"_spr);
+
+            f->m_mainLayer->addChild(f->m_showcaseIcon);
+
+            setIconPosition(0.f);
+        });
+    }
 };
