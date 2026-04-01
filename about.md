@@ -63,4 +63,4 @@ Thanks to the rest of the channels that I got showcases from.
 * **[KrmaL](https://www.youtube.com/@KrmaL)**
 * **[That one guy with no views](https://www.youtube.com/@ThatOneGuyWithNoViews/)**
 * **[Extreme Demon Archive](https://www.youtube.com/@ExtremeDemonArchiveGD/)**
-* **[Horizon 2](https://www.youtube.com/@horizon
+* **[Horizon 2](https://www.youtube.com/@horizongd/)**
