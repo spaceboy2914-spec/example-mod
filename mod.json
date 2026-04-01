@@ -8,7 +8,7 @@
 	},
 	"id": "zilko.level_showcases",
 	"name": "Level Showcases",
-	"version": "v1.1.4",
+	"version": "v1.1.5",
 	"developer": "Zilko",
 	"description": "links to showcases",
 	"dependencies": {
